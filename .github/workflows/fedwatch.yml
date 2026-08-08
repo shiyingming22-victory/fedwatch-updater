@@ -2,8 +2,9 @@ name: fedwatch
 
 on:
   schedule:
-    # 08:30 UTC Mon-Fri = 04:30 ET (EDT) / 03:30 ET (EST), before the EOD pull
-    - cron: '30 8 * * 1-5'
+    # 22:30 UTC Mon-Fri = 18:30 ET (EDT) / 17:30 ET (EST), after close,
+    # before the EOD pipeline (07:00 Beijing Mon-Fri)
+    - cron: '30 22 * * 1-5'
   workflow_dispatch:
 
 permissions:

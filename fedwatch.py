@@ -42,10 +42,19 @@ def recent_business_day(d):
 def fred_series(session, series_id):
     end = date.today()
     start = end - timedelta(days=10)
-    r = session.get(FRED_URL, params={'id': series_id,
-                                      'cosd': start.isoformat(),
-                                      'coed': end.isoformat()}, timeout=30)
-    r.raise_for_status()
+    r = None
+    for attempt in range(3):
+        try:
+            r = session.get(FRED_URL, params={'id': series_id,
+                                              'cosd': start.isoformat(),
+                                              'coed': end.isoformat()},
+                            timeout=60)
+            r.raise_for_status()
+            break
+        except Exception:
+            time.sleep(2 + 2 * attempt)
+    if r is None:
+        raise RuntimeError(f'FRED {series_id} unreachable')
     for line in reversed(r.text.strip().splitlines()[1:]):
         parts = line.split(',')
         if len(parts) == 2 and parts[1] not in ('.', ''):
@@ -104,11 +113,17 @@ def main():
         trade = recent_business_day(date.today() - timedelta(days=1))
         data = None
         for _ in range(4):
-            r = session.get(CME_URL, params={'tradeDate': trade.strftime('%m/%d/%Y')}, timeout=30)
-            if r.status_code == 200:
-                data = r.json()
-                if not data.get('empty'):
-                    break
+            try:
+                r = session.get(CME_URL,
+                                params={'tradeDate': trade.strftime('%m/%d/%Y')},
+                                timeout=60)
+                if r.status_code == 200:
+                    data = r.json()
+                    if not data.get('empty'):
+                        break
+            except Exception as e:
+                print(f'[warn] CME attempt failed: {type(e).__name__}')
+            time.sleep(2)
             trade = recent_business_day(trade - timedelta(days=1))
         if not data or not data.get('settlements'):
             raise RuntimeError('CME settlements unavailable')
@@ -138,6 +153,13 @@ def main():
         print('fedwatch updated:', json.dumps(payload, ensure_ascii=False))
     except Exception as e:
         print(f'[warn] fedwatch fetch failed ({type(e).__name__}: {e}); keeping previous file')
+        if not out.exists():
+            out.write_text(json.dumps(
+                {'status': 'error', 'meeting': None, 'probabilities': {},
+                 'consensus_high': False,
+                 'updated': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                 'source': 'error'}, ensure_ascii=False, indent=2),
+                encoding='utf-8')
         sys.exit(0)
 
 

@@ -133,10 +133,13 @@ def moves_to_probs(expected, anchor):
     p_ceil = max(0.0, min(1.0, expected - floor_m))
     p_floor = 1.0 - p_ceil
     out = {}
+    lo_pct = pre_lower / 100
     if p_floor > 0.001:
-        out[f'{pre_lower + floor_m * 25}-{pre_lower + floor_m * 25 + 25}'] = round(p_floor * 100, 1)
+        a = lo_pct + floor_m * 0.25
+        out[f'{a:.2f}-{a + 0.25:.2f}'] = round(p_floor * 100, 1)
     if p_ceil > 0.001:
-        out[f'{pre_lower + (floor_m + 1) * 25}-{pre_lower + (floor_m + 1) * 25 + 25}'] = round(p_ceil * 100, 1)
+        b = lo_pct + (floor_m + 1) * 0.25
+        out[f'{b:.2f}-{b + 0.25:.2f}'] = round(p_ceil * 100, 1)
     return out
 
 

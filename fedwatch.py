@@ -11,6 +11,7 @@ On failure the previous fedwatch.json is kept (no breakage).
 import calendar
 import json
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 

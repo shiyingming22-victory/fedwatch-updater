@@ -63,6 +63,35 @@ def fred_series(session, series_id):
     raise ValueError(f'no {series_id} value')
 
 
+def effr_fallback(session):
+    """NY Fed official EFFR API fallback when FRED is down."""
+    urls = [
+        'https://markets.newyorkfed.org/api/rates/unsecured/effr/latest.json',
+        'https://markets.newyorkfed.org/api/rates/unsecured/effr/all.json',
+    ]
+    for url in urls:
+        try:
+            r = session.get(url, timeout=30)
+            if r.status_code != 200:
+                continue
+            d = r.json()
+            rows = (d.get('effr') or {}).get('data') or d.get('data') or []
+            for row in reversed(rows):
+                v = row.get('percentRate') or row.get('rate')
+                if v is not None:
+                    return float(v)
+        except Exception:
+            continue
+    raise RuntimeError('EFFR fallback unreachable')
+
+
+def fetch_effr(session):
+    try:
+        return fred_series(session, 'EFFR')
+    except Exception:
+        return effr_fallback(session)
+
+
 def month_key(y, m):
     return f'{MONTH_NAMES[m]} {y % 100}'
 
@@ -110,7 +139,7 @@ def main():
     session = requests.Session()
     session.headers.update({'User-Agent': UA})
     try:
-        effr = fred_series(session, 'EFFR')
+        effr = fetch_effr(session)
         trade = recent_business_day(date.today() - timedelta(days=1))
         data = None
         for _ in range(4):

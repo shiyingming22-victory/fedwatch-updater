@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install deps
-        run: pip install requests
+        run: pip install requests curl_cffi
       - name: Fetch FedWatch data
         run: python fedwatch.py
       - name: Commit and push

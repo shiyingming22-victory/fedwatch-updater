@@ -15,7 +15,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
+from curl_cffi import requests as cffi_requests
 
 CME_URL = ('https://www.cmegroup.com/CmeWS/mvc/Settlements/Futures/Settlements'
            '/305/FUT')
@@ -142,7 +142,7 @@ def moves_to_probs(expected, anchor):
 
 def main():
     out = Path('fedwatch.json')
-    session = requests.Session()
+    session = cffi_requests.Session(impersonate='chrome')
     session.headers.update({'User-Agent': UA})
     try:
         data, trade = fetch_cme_settlements(session)

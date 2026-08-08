@@ -1,12 +1,12 @@
 #!/usr/bin/env python
 """Fetch CME FedWatch-style probabilities and write fedwatch.json.
 
-Sources (all official/free):
-  - CME 30-Day Fed Funds futures settlements (product 305)
-  - FRED EFFR (effective federal funds rate)
+Primary source: CME 30-Day Fed Funds futures settlements (product 305).
+EFFR (FRED, with NY Fed fallback) is optional: if unavailable, the
+previous month's implied rate is used as the label anchor.
 
-Runs on GitHub Actions (overseas), so the CME host is reachable.
-On failure the previous fedwatch.json is kept (no breakage).
+Runs on GitHub Actions (overseas). On total failure a stub file is
+written so the commit step never breaks.
 """
 import calendar
 import json
@@ -20,6 +20,10 @@ import requests
 CME_URL = ('https://www.cmegroup.com/CmeWS/mvc/Settlements/Futures/Settlements'
            '/305/FUT')
 FRED_URL = 'https://fred.stlouisfed.org/graph/fredgraph.csv'
+NYFED_URLS = [
+    'https://markets.newyorkfed.org/api/rates/unsecured/effr/latest.json',
+    'https://markets.newyorkfed.org/api/rates/unsecured/effr/all.json',
+]
 
 FOMC_2026 = [
     date(2026, 1, 28), date(2026, 3, 18), date(2026, 4, 29),
@@ -40,38 +44,51 @@ def recent_business_day(d):
     return d
 
 
-def fred_series(session, series_id):
-    end = date.today()
-    start = end - timedelta(days=10)
-    r = None
-    for attempt in range(3):
+def month_key(y, m):
+    return f'{MONTH_NAMES[m]} {y % 100}'
+
+
+def days_in_month(d):
+    return calendar.monthrange(d.year, d.month)[1]
+
+
+def fetch_cme_settlements(session):
+    trade = recent_business_day(date.today() - timedelta(days=1))
+    for _ in range(4):
         try:
-            r = session.get(FRED_URL, params={'id': series_id,
-                                              'cosd': start.isoformat(),
-                                              'coed': end.isoformat()},
-                            timeout=60)
+            r = session.get(CME_URL,
+                            params={'tradeDate': trade.strftime('%m/%d/%Y')},
+                            timeout=30)
+            if r.status_code == 200:
+                data = r.json()
+                if not data.get('empty') and data.get('settlements'):
+                    return data, trade
+        except Exception as e:
+            print(f'[warn] CME attempt failed: {type(e).__name__}')
+        time.sleep(2)
+        trade = recent_business_day(trade - timedelta(days=1))
+    raise RuntimeError('CME settlements unavailable')
+
+
+def fetch_effr(session):
+    """FRED first, NY Fed fallback; return float or None."""
+    for attempt in range(2):
+        try:
+            end = date.today()
+            start = end - timedelta(days=10)
+            r = session.get(FRED_URL,
+                            params={'id': 'EFFR', 'cosd': start.isoformat(),
+                                    'coed': end.isoformat()}, timeout=30)
             r.raise_for_status()
-            break
+            for line in reversed(r.text.strip().splitlines()[1:]):
+                parts = line.split(',')
+                if len(parts) == 2 and parts[1] not in ('.', ''):
+                    return float(parts[1])
         except Exception:
-            time.sleep(2 + 2 * attempt)
-    if r is None:
-        raise RuntimeError(f'FRED {series_id} unreachable')
-    for line in reversed(r.text.strip().splitlines()[1:]):
-        parts = line.split(',')
-        if len(parts) == 2 and parts[1] not in ('.', ''):
-            return float(parts[1])
-    raise ValueError(f'no {series_id} value')
-
-
-def effr_fallback(session):
-    """NY Fed official EFFR API fallback when FRED is down."""
-    urls = [
-        'https://markets.newyorkfed.org/api/rates/unsecured/effr/latest.json',
-        'https://markets.newyorkfed.org/api/rates/unsecured/effr/all.json',
-    ]
-    for url in urls:
+            time.sleep(2)
+    for url in NYFED_URLS:
         try:
-            r = session.get(url, timeout=30)
+            r = session.get(url, timeout=20)
             if r.status_code != 200:
                 continue
             d = r.json()
@@ -82,32 +99,21 @@ def effr_fallback(session):
                     return float(v)
         except Exception:
             continue
-    raise RuntimeError('EFFR fallback unreachable')
+    return None
 
 
-def fetch_effr(session):
-    try:
-        return fred_series(session, 'EFFR')
-    except Exception:
-        return effr_fallback(session)
-
-
-def month_key(y, m):
-    return f'{MONTH_NAMES[m]} {y % 100}'
-
-
-def days_in_month(d):
-    return calendar.monthrange(d.year, d.month)[1]
-
-
-def expected_moves(settle_map, meeting, effr):
+def compute(settle_map, meeting, effr):
+    """Return (expected_moves, anchor_rate)."""
     key = month_key(meeting.year, meeting.month)
-    if key not in settle_map:
-        return None
     implied = 100.0 - settle_map[key]
     py, pm = (meeting.year - 1, 12) if meeting.month == 1 else (meeting.year, meeting.month - 1)
     prev_key = month_key(py, pm)
-    pre_rate = (100.0 - settle_map[prev_key]) if prev_key in settle_map else effr
+    if prev_key in settle_map:
+        pre_rate = 100.0 - settle_map[prev_key]
+    elif effr is not None:
+        pre_rate = effr
+    else:
+        pre_rate = implied
     d, D = meeting.day, days_in_month(meeting)
     n_post = D - d + 1
     if n_post <= 3:
@@ -115,14 +121,14 @@ def expected_moves(settle_map, meeting, effr):
         nxt_key = month_key(ny, nm)
         if nxt_key in settle_map:
             post_rate = 100.0 - settle_map[nxt_key]
-            return (post_rate - pre_rate) / 0.25
+            return (post_rate - pre_rate) / 0.25, pre_rate
     n_pre = d - 1
     post_rate = (implied * D - pre_rate * n_pre) / n_post if n_post > 0 else implied
-    return (post_rate - pre_rate) / 0.25
+    return (post_rate - pre_rate) / 0.25, pre_rate
 
 
-def moves_to_probs(expected, effr):
-    pre_lower = int(effr * 100 // 25) * 25
+def moves_to_probs(expected, anchor):
+    pre_lower = int(anchor * 100 // 25) * 25
     floor_m = int(expected // 1) if expected >= 0 else int(expected) - 1
     p_ceil = max(0.0, min(1.0, expected - floor_m))
     p_floor = 1.0 - p_ceil
@@ -139,24 +145,7 @@ def main():
     session = requests.Session()
     session.headers.update({'User-Agent': UA})
     try:
-        effr = fetch_effr(session)
-        trade = recent_business_day(date.today() - timedelta(days=1))
-        data = None
-        for _ in range(4):
-            try:
-                r = session.get(CME_URL,
-                                params={'tradeDate': trade.strftime('%m/%d/%Y')},
-                                timeout=60)
-                if r.status_code == 200:
-                    data = r.json()
-                    if not data.get('empty'):
-                        break
-            except Exception as e:
-                print(f'[warn] CME attempt failed: {type(e).__name__}')
-            time.sleep(2)
-            trade = recent_business_day(trade - timedelta(days=1))
-        if not data or not data.get('settlements'):
-            raise RuntimeError('CME settlements unavailable')
+        data, trade = fetch_cme_settlements(session)
         settle_map = {}
         for s in data['settlements']:
             try:
@@ -167,8 +156,9 @@ def main():
         meeting = min((m for m in FOMC_2026 if m >= today), default=None)
         if meeting is None:
             raise RuntimeError('no upcoming FOMC in schedule')
-        moves = expected_moves(settle_map, meeting, effr)
-        probs = moves_to_probs(moves, effr) if moves is not None else {}
+        effr = fetch_effr(session)
+        moves, anchor = compute(settle_map, meeting, effr)
+        probs = moves_to_probs(moves, anchor)
         high = bool(probs) and max(probs.values()) >= 80.0
         payload = {
             'meeting': meeting.isoformat(),
@@ -177,12 +167,14 @@ def main():
             'probabilities': probs,
             'consensus_high': high,
             'updated': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-            'source': 'cme_settlements+fred',
+            'source': 'cme_settlements' + ('+fred' if effr is not None else ''),
         }
-        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
+        out.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                       encoding='utf-8')
         print('fedwatch updated:', json.dumps(payload, ensure_ascii=False))
     except Exception as e:
-        print(f'[warn] fedwatch fetch failed ({type(e).__name__}: {e}); keeping previous file')
+        print(f'[warn] fedwatch fetch failed ({type(e).__name__}: {e}); '
+              'keeping previous file')
         if not out.exists():
             out.write_text(json.dumps(
                 {'status': 'error', 'meeting': None, 'probabilities': {},

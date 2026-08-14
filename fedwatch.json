@@ -1,12 +1,12 @@
 {
   "meeting": "2026-09-16",
   "effr": 3.63,
-  "trade_date": "2026-08-12",
+  "trade_date": "2026-08-13",
   "probabilities": {
-    "3.50-3.75": 62.0,
-    "3.75-4.00": 38.0
+    "3.50-3.75": 68.0,
+    "3.75-4.00": 32.0
   },
   "consensus_high": false,
-  "updated": "2026-08-13T05:18:06Z",
+  "updated": "2026-08-14T05:11:28Z",
   "source": "cme_settlements+fred"
 }
